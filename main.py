@@ -1,37 +1,30 @@
+# General imports
+import numpy as np
 
-from astrokit.models.cr3bp import CR3BP
-from astrokit.simulation.propagator import Propagator
-from astrokit.utils.constants import EARTH_MOON_MU
-from astrokit.utils.plotting import plot_trajectory_3d, plot_jacobi
+# Import Astrokit Tool
+from astrokit import *
 
-# Create model
 model = CR3BP(EARTH_MOON_MU)
-
-# Create propagator
 propagator = Propagator(model)
+corrector = DifferentialCorrector(propagator)
 
-# Test state near an L2 halo orbit
-state0 = [
-    1.0113254829162490E+0,
-    -3.4655306799190984E-28,
-    1.7343215557041181E-1,
-    -6.8885128080822615E-13,
-    -7.8717210400801721E-2,
-    1.0116298133884205E-11
-]
+# reference = corrector.solve(NRHO_GUESS)
 
-state0 = [
-    1 - EARTH_MOON_MU,
-    0.0455,
-    0,
-    -0.5,
-    0.5,
-    0.0001
-]
+# print("Corrected initial state:")
+# print(reference.initial_state)
+# print("Approximate period:", reference.period)
 
-# Propagate
-result = propagator.propagate(state0, tf=2*10.0)
+state0 = np.array([
+    1.0277926091,   # x
+    0.0,            # y
+   -0.1858044184,   # z
+    0.0,            # vx
+   -0.1154896637,   # vy
+    0.0             # vz
+])
 
-# Plot
-plot_trajectory_3d(result.states, EARTH_MOON_MU)
-# plot_jacobi(result.t, result.jacobi)
+result = propagator.propagate(state0, 10, n_eval=10000)
+
+fig = plot_trajectory_3d(result.states)
+show_figure(fig)
+

@@ -43,3 +43,19 @@ def test_equations_of_motion_known_value(cr3bp_model):
         1.0116298133884205E-11
     ])
     np.testing.assert_allclose(deriv[:3], expected_velocity, atol=1e-12)
+
+
+def test_differential_corrector_period(cr3bp_model):
+    from astrokit.orbit_design.differential_corrector import DifferentialCorrector
+    from astrokit.orbit_design.initial_guesses import EARTH_MOON_L2_NORTHERN_HALO_GUESS
+
+    propagator = Propagator(cr3bp_model)
+    corrector = DifferentialCorrector(propagator)
+
+    reference = corrector.solve(EARTH_MOON_L2_NORTHERN_HALO_GUESS)
+
+    assert reference.period > 0
+    assert reference.period < 10
+
+    propagated = propagator.propagate(reference.initial_state, tf=reference.period, n_eval=1000)
+    assert abs(propagated.states[1, -1]) < 1e-2
