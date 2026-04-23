@@ -4,6 +4,49 @@ import numpy as np
 
 from ..utils.constants import EARTH_MOON_MU
 
+__all__ = [
+    "plot_trajectory_3d",
+    "plot_jacobi",
+    "show_figure",
+    "plot_multiple_trajectories_3d",
+    "plot_position_error_3d",
+]
+
+
+def _build_periodic_reference_positions(reference_trajectory):
+    reference_times = np.asarray(reference_trajectory.t, dtype=float)
+    reference_positions = np.asarray(reference_trajectory.states[:3], dtype=float)
+
+    if reference_times.ndim != 1:
+        raise ValueError("reference_trajectory.t must be a 1D array")
+    if reference_positions.shape[1] != reference_times.size:
+        raise ValueError("Reference trajectory state history must align with reference times")
+    if reference_times[0] != 0.0:
+        raise ValueError("Reference trajectory must start at t = 0.")
+    if reference_trajectory.period <= 0.0:
+        raise ValueError("Reference trajectory period must be positive")
+    if reference_times[-1] + 1e-10 < reference_trajectory.period:
+        raise ValueError(
+            "Reference history must span a full period. "
+            "Propagate the corrected initial state over one full period and pass "
+            "that full history into plot_position_error_3d()."
+        )
+
+    return reference_times, reference_positions
+
+
+def _sample_reference_positions(reference_trajectory, sample_times):
+    reference_times, reference_positions = _build_periodic_reference_positions(reference_trajectory)
+    wrapped_times = np.mod(np.asarray(sample_times, dtype=float), reference_trajectory.period)
+
+    sampled_positions = np.vstack(
+        [
+            np.interp(wrapped_times, reference_times, reference_positions[axis])
+            for axis in range(3)
+        ]
+    )
+    return sampled_positions
+
 def plot_trajectory_3d(states, mu = EARTH_MOON_MU, fig=None, format_dict=None):
     
     # Default formatting
@@ -156,4 +199,91 @@ def plot_multiple_trajectories_3d(trajectory_list, mu=EARTH_MOON_MU, fig=None, f
         
         fig = plot_trajectory_3d(states, mu=mu, fig=fig, format_dict=fmt_dict)
     
+    return fig
+
+
+def plot_position_error_3d(reference_trajectory, trajectory_dict, fig=None, format_dict=None):
+    """
+    Plot 3D position error histories against a periodic reference trajectory.
+
+    Parameters
+    ----------
+    reference_trajectory : ReferenceTrajectory
+        Periodic reference trajectory used to compute position error.
+    trajectory_dict : dict[str, PropagationResult]
+        Mapping of legend label to propagated trajectory result. Each result must
+        contain `t` and `states`, where `states[:3]` are the propagated position
+        components in the same frame as the reference.
+    fig : plotly.graph_objects.Figure, optional
+        Existing figure to add traces to.
+    format_dict : dict, optional
+        Optional formatting overrides for the error traces and layout.
+    """
+    default_format = {
+        "error": {
+            "mode": "lines",
+            "line": {"width": 4},
+        },
+        "origin": {
+            "name": "Zero Error",
+            "mode": "markers",
+            "marker": {"size": 5, "color": "black", "symbol": "x"},
+        },
+        "layout": {
+            "scene": {
+                "xaxis": {"title": "x Error"},
+                "yaxis": {"title": "y Error"},
+                "zaxis": {"title": "z Error"},
+                "aspectmode": "cube",
+                "aspectratio": {"x": 1, "y": 1, "z": 1},
+            },
+            "title": "3D Position Error Relative to Reference Trajectory",
+        },
+    }
+
+    if format_dict:
+        for key in format_dict:
+            if key in default_format and isinstance(default_format[key], dict):
+                default_format[key].update(format_dict[key])
+
+    if fig is None:
+        fig = go.Figure()
+
+    for label, trajectory_result in trajectory_dict.items():
+        sample_times = np.asarray(trajectory_result.t, dtype=float)
+        propagated_positions = np.asarray(trajectory_result.states[:3], dtype=float)
+
+        if propagated_positions.shape[1] != sample_times.size:
+            raise ValueError(
+                f"Trajectory '{label}' has mismatched time and state history lengths"
+            )
+
+        reference_positions = _sample_reference_positions(reference_trajectory, sample_times)
+        position_error = propagated_positions - reference_positions
+
+        trace_format = {
+            key: (value.copy() if isinstance(value, dict) else value)
+            for key, value in default_format["error"].items()
+        }
+        trace_format["name"] = label
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=position_error[0],
+                y=position_error[1],
+                z=position_error[2],
+                **trace_format,
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter3d(
+            x=[0.0],
+            y=[0.0],
+            z=[0.0],
+            **default_format["origin"],
+        )
+    )
+
+    fig.update_layout(**default_format["layout"])
     return fig

@@ -1,12 +1,12 @@
 import pytest
 import numpy as np
 from astrokit.models import CR3BP
+from astrokit.utils.constants import EARTH_MOON_MU
 
 @pytest.fixture
 def cr3bp_model():
     """Fixture providing a CR3BP model instance with Earth-Moon parameters."""
-    MU = 0.0121505856
-    return CR3BP(MU)
+    return CR3BP(EARTH_MOON_MU)
 
 @pytest.fixture
 def initial_state():

@@ -1,30 +1,15 @@
-# General imports
 import numpy as np
+import plotly.graph_objects as go
 
-# Import Astrokit Tool
-from astrokit import *
+from astrokit.models import CR3BP
+from astrokit.models.perturbing_body import create_solar_perturbation
+from astrokit.orbit_design.differential_corrector import DifferentialCorrector
+from astrokit.orbit_design.initial_guesses import (
+    EARTH_MOON_L2_NORTHERN_HALO_GUESS,
+    EARTH_MOON_L2_SOUTHERN_HALO_GUESS,
+)
+from astrokit.simulation import Propagator
+from astrokit.utils.constants import EARTH_MOON_MU
+from astrokit.utils.plotting import show_figure
 
-model = CR3BP(EARTH_MOON_MU)
-propagator = Propagator(model)
-corrector = DifferentialCorrector(propagator)
-
-# reference = corrector.solve(NRHO_GUESS)
-
-# print("Corrected initial state:")
-# print(reference.initial_state)
-# print("Approximate period:", reference.period)
-
-state0 = np.array([
-    1.0277926091,   # x
-    0.0,            # y
-   -0.1858044184,   # z
-    0.0,            # vx
-   -0.1154896637,   # vy
-    0.0             # vz
-])
-
-result = propagator.propagate(state0, 10, n_eval=10000)
-
-fig = plot_trajectory_3d(result.states)
-show_figure(fig)
 

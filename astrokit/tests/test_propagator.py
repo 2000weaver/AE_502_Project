@@ -1,8 +1,10 @@
 import numpy as np
 from astrokit.models import CR3BP
+from astrokit.models.perturbing_body import create_solar_perturbation
 from astrokit.simulation import Propagator
+from astrokit.utils.constants import EARTH_MOON_MU
 
-MU = 0.0121505856
+MU = EARTH_MOON_MU
 
 
 def test_propagation_runs(cr3bp_model, initial_state):
@@ -59,3 +61,27 @@ def test_differential_corrector_period(cr3bp_model):
 
     propagated = propagator.propagate(reference.initial_state, tf=reference.period, n_eval=1000)
     assert abs(propagated.states[1, -1]) < 1e-2
+
+
+def test_perturbed_propagation_runs_and_returns_finite_states(initial_state):
+    model = CR3BP(mu=MU, perturbing_body=create_solar_perturbation())
+    propagator = Propagator(model)
+
+    result = propagator.propagate(initial_state, tf=1.0, n_eval=500)
+
+    assert result.states.shape == (6, len(result.t))
+    assert np.all(np.isfinite(result.states))
+    assert np.all(np.isfinite(result.jacobi))
+
+
+def test_perturbed_and_unperturbed_models_diverge_from_same_initial_state(initial_state):
+    unperturbed = Propagator(CR3BP(mu=MU))
+    perturbed = Propagator(CR3BP(mu=MU, perturbing_body=create_solar_perturbation()))
+
+    result_unperturbed = unperturbed.propagate(initial_state, tf=2.0, n_eval=1000)
+    result_perturbed = perturbed.propagate(initial_state, tf=2.0, n_eval=1000)
+
+    final_position_delta = np.linalg.norm(
+        result_perturbed.states[:3, -1] - result_unperturbed.states[:3, -1]
+    )
+    assert final_position_delta > 1e-8
