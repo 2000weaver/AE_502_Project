@@ -111,6 +111,76 @@ class DifferentialCorrector:
             raise ValueError("Must have at least one constraint")
         self.constraint_indices = indices
 
+    def _starts_on_symmetry_plane(self, state: np.ndarray) -> bool:
+        """Return True when the state matches the usual halo-orbit symmetry seed."""
+        return (
+            np.isclose(state[1], 0.0, atol=1e-10)
+            and np.isclose(state[3], 0.0, atol=1e-10)
+            and np.isclose(state[5], 0.0, atol=1e-10)
+        )
+
+    def _estimate_period(
+        self,
+        initial_state: np.ndarray,
+        result,
+        period_hint: float | None = None,
+    ) -> tuple[float, str]:
+        """
+        Estimate the full period from a propagated trajectory.
+
+        For symmetry-plane seeds we retain the classic halo shortcut:
+        half-period = first positive-to-negative y=0 crossing.
+
+        For arbitrary-phase seeds we estimate the period from the first
+        meaningful return of the full 6D state to the initial condition.
+        """
+        if period_hint is not None and period_hint <= 0.0:
+            raise ValueError("period_hint must be positive when provided")
+
+        if self._starts_on_symmetry_plane(initial_state) and period_hint is None:
+            _, crossing_time = find_y_crossing(result.t, result.states)
+            if crossing_time is None:
+                raise RuntimeError("No y = 0 crossing found after correction")
+            return 2.0 * crossing_time, "symmetry_plane_crossing"
+
+        times = np.asarray(result.t, dtype=float)
+        states = np.asarray(result.states, dtype=float)
+        state_error_norm = np.linalg.norm(
+            states - np.asarray(initial_state, dtype=float).reshape(-1, 1),
+            axis=0,
+        )
+
+        if times.size < 3:
+            raise RuntimeError("Not enough propagated samples to estimate orbit period")
+
+        dt = times[1] - times[0]
+        t_min = max(0.5, 5.0 * dt)
+        local_min_mask = (
+            (state_error_norm[1:-1] <= state_error_norm[:-2])
+            & (state_error_norm[1:-1] <= state_error_norm[2:])
+        )
+        candidate_indices = np.where(local_min_mask)[0] + 1
+        candidate_indices = candidate_indices[times[candidate_indices] >= t_min]
+
+        if candidate_indices.size == 0:
+            raise RuntimeError(
+                "Unable to estimate full orbit period from the propagated return map"
+            )
+
+        min_candidate_error = float(np.min(state_error_norm[candidate_indices]))
+        eligible_indices = candidate_indices[
+            state_error_norm[candidate_indices]
+            <= max(10.0 * min_candidate_error, 1.0e-8)
+        ]
+
+        if period_hint is not None:
+            hint_idx = int(np.argmin(np.abs(times[eligible_indices] - float(period_hint))))
+            period_index = int(eligible_indices[hint_idx])
+            return float(times[period_index]), "state_recurrence_period_hint"
+
+        period_index = int(eligible_indices[0])
+        return float(times[period_index]), "state_recurrence"
+
     def constraint_function(self, free_vars, base_state, tf=10.0):
         """
         Evaluate constraints at y=0 crossing.
@@ -153,25 +223,35 @@ class DifferentialCorrector:
         constraints = np.array([crossing_state[c_idx] for c_idx in self.constraint_indices])
         return constraints
 
-    def solve(self, initial_guess, tf_propagation=10.0, orbit_tf=20.0):
+    def solve(self, initial_guess, tf_propagation=10.0, orbit_tf=20.0, period_hint=None):
         """
         Solve for periodic orbit using differential correction.
         
         Parameters
         ----------
-        initial_guess : np.ndarray
-            Initial state vector [x, y, z, vx, vy, vz].
+        initial_guess : np.ndarray or ReferenceTrajectory
+            Initial state vector [x, y, z, vx, vy, vz], or a reference orbit
+            whose initial state should be corrected.
         tf_propagation : float, optional
             Integration time for constraint evaluation. Default: 10.0.
         orbit_tf : float, optional
             Integration time for final orbit. Default: 20.0.
+        period_hint : float, optional
+            Guide for the corrected-orbit period estimate. Useful when the
+            initial state comes from a known periodic orbit at arbitrary phase.
             
         Returns
         -------
         ReferenceTrajectory
             Corrected periodic orbit.
         """
-        base_state = initial_guess.copy()
+        inferred_period_hint = period_hint
+        if isinstance(initial_guess, ReferenceTrajectory):
+            base_state = np.asarray(initial_guess.initial_state, dtype=float).copy()
+            if inferred_period_hint is None and initial_guess.period > 0.0:
+                inferred_period_hint = float(initial_guess.period)
+        else:
+            base_state = np.asarray(initial_guess, dtype=float).copy()
         
         # Extract initial free variables
         free_vars0 = np.array([base_state[i] for i in self.free_var_indices])
@@ -194,19 +274,30 @@ class DifferentialCorrector:
         for i, var_idx in enumerate(self.free_var_indices):
             corrected_state[var_idx] = solution.x[i]
         
-        # Propagate to find period from y-plane crossing
+        # Propagate to estimate the full period of the corrected orbit.
         result = self.propagator.propagate(corrected_state, tf=orbit_tf)
-        
-        crossing_index, crossing_time = find_y_crossing(result.t, result.states)
-        if crossing_index is None:
-            raise RuntimeError("No y = 0 crossing found after correction")
-        
-        # Period is twice the half-period (time to y=0 crossing)
-        period = 2 * crossing_time
-        
+
+        period, period_estimation_method = self._estimate_period(
+            corrected_state,
+            result,
+            period_hint=inferred_period_hint,
+        )
+        if period >= result.t[-1]:
+            raise RuntimeError(
+                "Estimated period reaches the propagation horizon. "
+                "Increase orbit_tf so the corrected orbit spans at least one full period."
+            )
+
+        end_index = int(np.searchsorted(result.t, period, side="left"))
+        t_history = np.asarray(result.t[: end_index + 1], dtype=float).copy()
+        state_history = np.asarray(result.states[:, : end_index + 1], dtype=float).copy()
+        t_history[-1] = period
+        state_history[:, -1] = corrected_state
+
         return ReferenceTrajectory(
             initial_state=corrected_state,
             period=period,
-            t=result.t[:crossing_index+1],
-            states=result.states[:, :crossing_index+1]
+            t=t_history,
+            states=state_history,
+            metadata={"period_estimation_method": period_estimation_method},
         )
