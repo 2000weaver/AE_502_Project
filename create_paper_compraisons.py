@@ -20,6 +20,8 @@ from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import rcParams
+import matplotlib.patheffects as path_effects
 
 from astrokit.models import CR3BP
 from astrokit.models.perturbing_body import create_solar_perturbation
@@ -45,6 +47,14 @@ MOON_CENTER_M = np.array([(1.0 - EARTH_MOON_MU) * EARTH_MOON_DISTANCE_M, 0.0])
 PHASES_DEG = (0, 45, 90, 135, 180, 270)
 PAPER_RATIO_TICKS = np.array([0.03, 0.06, 0.07, 0.08, 0.09, 0.10, 0.13, 0.14, 0.20, 0.30, 0.40])
 FIGURE4_RATIO_MAX = 0.5
+
+rcParams["font.family"] = "Times New Roman"
+rcParams["axes.titlesize"] = 14
+rcParams["axes.labelsize"] = 12
+rcParams["xtick.labelsize"] = 10
+rcParams["ytick.labelsize"] = 10
+rcParams["legend.fontsize"] = 10
+rcParams["figure.titlesize"] = 18
 
 
 @dataclass(frozen=True)
@@ -169,20 +179,46 @@ def add_sun_arrow(ax: plt.Axes, theta_deg: float, length_m: float) -> None:
         "",
         xy=end,
         xytext=start,
-        arrowprops={"arrowstyle": "->", "color": "red", "lw": 1.5},
+        arrowprops={"arrowstyle": "->", "color": "white", "lw": 1.8},
         zorder=6,
     )
-    ax.text(
+    text = ax.text(
         text_pos[0],
         text_pos[1],
         "To the Sun",
-        color="red",
+        color="white",
         fontsize=9,
         fontweight="bold",
         ha=text_alignment,
         va="bottom" if direction[1] >= 0.0 else "top",
         zorder=6,
     )
+    text.set_path_effects(
+        [
+            path_effects.Stroke(linewidth=2.4, foreground="black"),
+            path_effects.Normal(),
+        ]
+    )
+
+
+def style_axes(ax: plt.Axes) -> None:
+    ax.set_facecolor("white")
+    ax.grid(True, color="0.88", linewidth=0.8)
+    ax.tick_params(direction="out", length=4, width=1.0)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.0)
+        spine.set_color("black")
+
+
+def style_colorbar(colorbar, label: str) -> None:
+    colorbar.set_label(label)
+    colorbar.ax.tick_params(direction="out", length=3, width=0.8)
+    colorbar.outline.set_linewidth(0.8)
+
+
+def apply_report_figure_style(fig: plt.Figure, title: str) -> None:
+    fig.patch.set_facecolor("white")
+    fig.suptitle(title, fontweight="bold")
 
 
 def build_ratio_levels(ratio: np.ndarray) -> np.ndarray:
@@ -200,7 +236,7 @@ def build_ratio_levels(ratio: np.ndarray) -> np.ndarray:
 def plot_xy_magnitude(output_path: str | None, resolution: int) -> None:
     x_bounds_m = (-40e6, 40e6)
     y_bounds_m = (-38e6, 38e6)
-    fig, axes = plt.subplots(3, 2, figsize=(11, 16), constrained_layout=True)
+    fig, axes = plt.subplots(3, 2, figsize=(8.6, 11.8), constrained_layout=True)
 
     for ax, theta_deg in zip(axes.flat, PHASES_DEG):
         field = compute_xy_plane(theta_deg, x_bounds_m, y_bounds_m, resolution)
@@ -229,9 +265,11 @@ def plot_xy_magnitude(output_path: str | None, resolution: int) -> None:
         ax.set_aspect("equal")
         ax.set_xlim(np.array(x_bounds_m) / 1e6)
         ax.set_ylim(np.array(y_bounds_m) / 1e6)
-        fig.colorbar(contour, ax=ax, label=r"$|p_s|$ ($10^{-6}$ m/s$^2$)")
+        style_axes(ax)
+        cbar = fig.colorbar(contour, ax=ax)
+        style_colorbar(cbar, r"$|p_s|$ ($10^{-6}$ m/s$^2$)")
 
-    fig.suptitle("Replication of paper page 6: solar perturbation in the x-y plane", fontsize=15)
+    apply_report_figure_style(fig, "Replication of Paper Page 6: Solar Perturbation in the x-y Plane")
     if output_path:
         fig.savefig(output_path, dpi=250, bbox_inches="tight")
     plt.show()
@@ -240,7 +278,7 @@ def plot_xy_magnitude(output_path: str | None, resolution: int) -> None:
 def plot_xz_magnitude(output_path: str | None, resolution: int) -> None:
     x_bounds_m = (-40e6, 40e6)
     z_bounds_m = (-40e6, 40e6)
-    fig, axes = plt.subplots(3, 2, figsize=(11, 16), constrained_layout=True)
+    fig, axes = plt.subplots(3, 2, figsize=(8.6, 11.8), constrained_layout=True)
 
     for ax, theta_deg in zip(axes.flat, PHASES_DEG):
         field = compute_xz_plane(theta_deg, x_bounds_m, z_bounds_m, resolution)
@@ -268,9 +306,11 @@ def plot_xz_magnitude(output_path: str | None, resolution: int) -> None:
         ax.set_aspect("equal")
         ax.set_xlim(np.array(x_bounds_m) / 1e6)
         ax.set_ylim(np.array(z_bounds_m) / 1e6)
-        fig.colorbar(contour, ax=ax, label=r"$|p_s|$ ($10^{-6}$ m/s$^2$)")
+        style_axes(ax)
+        cbar = fig.colorbar(contour, ax=ax)
+        style_colorbar(cbar, r"$|p_s|$ ($10^{-6}$ m/s$^2$)")
 
-    fig.suptitle("Replication of paper page 7: solar perturbation in the x-z plane", fontsize=15)
+    apply_report_figure_style(fig, "Replication of Paper Page 7: Solar Perturbation in the x-z Plane")
     if output_path:
         fig.savefig(output_path, dpi=250, bbox_inches="tight")
     plt.show()
@@ -279,7 +319,7 @@ def plot_xz_magnitude(output_path: str | None, resolution: int) -> None:
 def plot_ratio_xy(output_path: str | None, resolution: int) -> None:
     x_bounds_m = (-150e6, 600e6)
     y_bounds_m = (-300e6, 300e6)
-    fig, axes = plt.subplots(3, 2, figsize=(11, 16), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(11.8, 8.6), constrained_layout=True)
 
     for ax, theta_deg in zip(axes.flat, PHASES_DEG):
         xx_m, yy_m, ratio = compute_ratio_xy(theta_deg, x_bounds_m, y_bounds_m, resolution)
@@ -312,9 +352,11 @@ def plot_ratio_xy(output_path: str | None, resolution: int) -> None:
         ax.set_aspect("equal")
         ax.set_xlim(np.array(x_bounds_m) / 1e6)
         ax.set_ylim(np.array(y_bounds_m) / 1e6)
-        fig.colorbar(contour, ax=ax, ticks=levels, label=r"$|p_s| / |p_m|$")
+        style_axes(ax)
+        cbar = fig.colorbar(contour, ax=ax, ticks=levels)
+        style_colorbar(cbar, r"$|p_s| / |p_m|$")
 
-    fig.suptitle("Replication of paper page 8: perturbation-to-lunar-gravity ratio", fontsize=15)
+    apply_report_figure_style(fig, "Perturbation-to-Lunar-Gravity Ratio")
     if output_path:
         fig.savefig(output_path, dpi=250, bbox_inches="tight")
     plt.show()

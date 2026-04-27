@@ -1,12 +1,14 @@
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import numpy as np
+from scipy.spatial import cKDTree
 
 from ..utils.constants import EARTH_MOON_MU
 
 __all__ = [
     "plot_trajectory_3d",
     "plot_jacobi",
+    "plot_log_jacobi",
     "show_figure",
     "plot_multiple_trajectories_3d",
     "plot_position_error_3d",
@@ -18,10 +20,82 @@ __all__ = [
 def _normalize_time_axis(times, normalization_period=None):
     times = np.asarray(times, dtype=float)
     if normalization_period is None:
-        return times, "Time"
+        return times, "Time [TU]"
     if normalization_period <= 0.0:
         raise ValueError("normalization_period must be positive")
-    return times / normalization_period, "Time / Period"
+    return times / normalization_period, "Time / Period [-]"
+
+
+def _build_jacobi_series(t, jacobi):
+    if isinstance(t, dict):
+        series_dict = t
+    else:
+        if jacobi is None:
+            raise ValueError("jacobi must be provided when t is not a mapping")
+        series_dict = {"Jacobi Constant": (t, jacobi)}
+
+    normalized = {}
+    for label, series in series_dict.items():
+        if hasattr(series, "t") and hasattr(series, "jacobi"):
+            times = np.asarray(series.t, dtype=float)
+            jacobi_values = np.asarray(series.jacobi, dtype=float)
+        else:
+            if not isinstance(series, (tuple, list)) or len(series) != 2:
+                raise ValueError(
+                    "Each Jacobi series must be a (times, jacobi) pair or a propagation result"
+                )
+            times = np.asarray(series[0], dtype=float)
+            jacobi_values = np.asarray(series[1], dtype=float)
+
+        if times.ndim != 1 or jacobi_values.ndim != 1:
+            raise ValueError("Jacobi time and value histories must be 1D arrays")
+        if times.size != jacobi_values.size:
+            raise ValueError(f"Jacobi series '{label}' has mismatched time/value lengths")
+
+        normalized[str(label)] = (times, jacobi_values)
+
+    return normalized
+
+
+def _transform_jacobi_series(series_dict, transform, label_prefix):
+    transformed = {}
+    for label, (times, jacobi_values) in series_dict.items():
+        finite_positive = np.asarray(jacobi_values, dtype=float) > 0.0
+        if not np.all(finite_positive):
+            raise ValueError(
+                f"Jacobi series '{label}' contains non-positive values and cannot be log-transformed"
+            )
+        transformed[f"{label_prefix}{label}"] = (
+            np.asarray(times, dtype=float),
+            transform(np.asarray(jacobi_values, dtype=float)),
+        )
+    return transformed
+
+
+def _expand_format_dicts(format_dict, num_series):
+    if format_dict is None:
+        return [None] * num_series
+    if isinstance(format_dict, list):
+        format_dicts = list(format_dict)
+        if len(format_dicts) < num_series:
+            format_dicts.extend([None] * (num_series - len(format_dicts)))
+        return format_dicts
+    return [format_dict] + [None] * (num_series - 1)
+
+
+def _resolve_axis_range(values, axis_config):
+    arr = np.asarray(values, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+
+    vmin = float(np.min(finite))
+    vmax = float(np.max(finite))
+    if np.isclose(vmin, vmax):
+        pad = max(abs(vmin) * 1e-6, 1e-8)
+        return [vmin - pad, vmax + pad]
+    pad = max((vmax - vmin) * 0.02, 1e-8)
+    return [vmin - pad, vmax + pad]
 
 
 def _build_periodic_reference_positions(reference_trajectory):
@@ -79,9 +153,9 @@ def plot_trajectory_3d(states, mu = EARTH_MOON_MU, fig=None, format_dict=None):
         },
         'layout': {
             'scene': {
-                'xaxis': {'title': 'X Axis'},
-                'yaxis': {'title': 'Y Axis'},
-                'zaxis': {'title': 'Z Axis'},
+                'xaxis': {'title': 'x [LU]'},
+                'yaxis': {'title': 'y [LU]'},
+                'zaxis': {'title': 'z [LU]'},
                 'aspectmode': 'cube',
                 'aspectratio': {'x': 1, 'y': 1, 'z': 1}
             }
@@ -142,10 +216,12 @@ def plot_trajectory_3d(states, mu = EARTH_MOON_MU, fig=None, format_dict=None):
     return fig
 
 
-def plot_jacobi(t, jacobi, fig=None, format_dict=None, normalization_period=None):
+def plot_jacobi(t, jacobi=None, fig=None, format_dict=None, normalization_period=None):
     
-    # Default formatting
-    time_values, xaxis_title = _normalize_time_axis(t, normalization_period)
+    series_dict = _build_jacobi_series(t, jacobi)
+    format_dicts = _expand_format_dicts(format_dict, len(series_dict))
+    all_jacobi_values = np.concatenate([values for _, values in series_dict.values()])
+    _, xaxis_title = _normalize_time_axis(np.array([0.0, 1.0]), normalization_period)
 
     default_format = {
         'jacobi': {
@@ -155,35 +231,84 @@ def plot_jacobi(t, jacobi, fig=None, format_dict=None, normalization_period=None
         'layout': {
             'xaxis': {'title': xaxis_title},
             'yaxis': {
-                'title': 'Jacobi Constant [m^2 / s^2]',
-                'range': [min(jacobi) - 1e-5, max(jacobi) + 1e-5]
+                'title': 'Jacobi Constant [-]',
             }
         }
     }
-    
-    # Update defaults with user format_dict
-    if format_dict:
-        for key in format_dict:
-            if key in default_format:
-                default_format[key].update(format_dict[key])
     
     # Create figure if not provided
     if fig is None:
         fig = go.Figure()
     
-    # Add jacobi trace
-    fig.add_trace(
-        go.Scatter(
-            x = time_values, 
-            y = jacobi,
-            **default_format['jacobi']
+    # Add Jacobi traces
+    for idx, (label, (times, jacobi_values)) in enumerate(series_dict.items()):
+        time_values, _ = _normalize_time_axis(times, normalization_period)
+        series_format = format_dicts[idx]
+        trace_defaults = {
+            key: (value.copy() if isinstance(value, dict) else value)
+            for key, value in default_format['jacobi'].items()
+        }
+        layout_format = {
+            key: (value.copy() if isinstance(value, dict) else value)
+            for key, value in default_format['layout'].items()
+        }
+
+        if series_format:
+            if 'jacobi' in series_format:
+                trace_defaults.update(series_format['jacobi'])
+            if 'layout' in series_format:
+                for key, value in series_format['layout'].items():
+                    if key in layout_format and isinstance(layout_format[key], dict) and isinstance(value, dict):
+                        layout_format[key].update(value)
+                    else:
+                        layout_format[key] = value
+
+        if "type" in layout_format.get("yaxis", {}):
+            layout_format["yaxis"].pop("type")
+
+        trace_format = {
+            key: (value.copy() if isinstance(value, dict) else value)
+            for key, value in trace_defaults.items()
+        }
+        trace_format['name'] = label
+
+        fig.add_trace(
+            go.Scatter(
+                x = time_values, 
+                y = jacobi_values,
+                **trace_format
+            )
         )
+
+        if idx == 0:
+            default_format['layout'] = layout_format
+
+    computed_range = _resolve_axis_range(
+        all_jacobi_values,
+        default_format['layout'].get('yaxis', {}),
+    )
+    if computed_range is not None and 'range' not in default_format['layout']['yaxis']:
+        default_format['layout']['yaxis']['range'] = computed_range
+
+    fig.update_layout(**default_format['layout'])
+
+    return fig
+
+
+def plot_log_jacobi(t, jacobi=None, fig=None, format_dict=None, normalization_period=None):
+    series_dict = _build_jacobi_series(t, jacobi)
+    log_series_dict = _transform_jacobi_series(series_dict, np.log10, "log10(")
+
+    fig = plot_jacobi(
+        log_series_dict,
+        fig=fig,
+        format_dict=format_dict,
+        normalization_period=normalization_period,
     )
 
-    # Update layout only if this is a new figure
-    if len(fig.data) == 1:  # Only update if we just added the first trace
-        fig.update_layout(**default_format['layout'])
-
+    fig.update_layout(
+        yaxis={"title": "log10(Jacobi Constant) [-]"}
+    )
     return fig
 
 
@@ -227,7 +352,14 @@ def plot_multiple_trajectories_3d(trajectory_list, mu=EARTH_MOON_MU, fig=None, f
     return fig
 
 
-def plot_position_error_3d(reference_trajectory, trajectory_dict, fig=None, format_dict=None):
+def plot_position_error_3d(
+    reference_trajectory,
+    trajectory_dict,
+    fig=None,
+    format_dict=None,
+    length_scale=1.0,
+    length_unit_label="LU",
+):
     """
     Plot 3D position error histories against a periodic reference trajectory.
 
@@ -256,9 +388,9 @@ def plot_position_error_3d(reference_trajectory, trajectory_dict, fig=None, form
         },
         "layout": {
             "scene": {
-                "xaxis": {"title": "x Error"},
-                "yaxis": {"title": "y Error"},
-                "zaxis": {"title": "z Error"},
+                "xaxis": {"title": f"x Error [{length_unit_label}]"},
+                "yaxis": {"title": f"y Error [{length_unit_label}]"},
+                "zaxis": {"title": f"z Error [{length_unit_label}]"},
                 "aspectmode": "cube",
                 "aspectratio": {"x": 1, "y": 1, "z": 1},
             },
@@ -284,7 +416,7 @@ def plot_position_error_3d(reference_trajectory, trajectory_dict, fig=None, form
             )
 
         reference_positions = _sample_reference_positions(reference_trajectory, sample_times)
-        position_error = propagated_positions - reference_positions
+        position_error = (propagated_positions - reference_positions) * length_scale
 
         trace_format = {
             key: (value.copy() if isinstance(value, dict) else value)
@@ -320,6 +452,8 @@ def plot_position_error_magnitude(
     fig=None,
     format_dict=None,
     normalization_period=None,
+    length_scale=1.0,
+    length_unit_label="LU",
 ):
     """
     Plot position-error magnitude versus time against a periodic reference trajectory.
@@ -337,8 +471,6 @@ def plot_position_error_magnitude(
     format_dict : dict, optional
         Optional formatting overrides for the error traces and layout.
     """
-    xaxis_title = "Time" if normalization_period is None else "Time / Period"
-
     default_format = {
         "error": {
             "mode": "lines",
@@ -346,21 +478,17 @@ def plot_position_error_magnitude(
         },
         "layout": {
             "title": "Position Error Magnitude Relative to Reference Trajectory",
-            "xaxis": {"title": xaxis_title},
-            "yaxis": {"title": "Position Error Magnitude"},
+            "xaxis": {"title": _normalize_time_axis(np.array([0.0, 1.0]), normalization_period)[1]},
+            "yaxis": {"title": f"Position Error Magnitude [{length_unit_label}]"},
             "hovermode": "x unified",
         },
     }
-
-    if format_dict:
-        for key in format_dict:
-            if key in default_format and isinstance(default_format[key], dict):
-                default_format[key].update(format_dict[key])
+    format_dicts = _expand_format_dicts(format_dict, len(trajectory_dict))
 
     if fig is None:
         fig = go.Figure()
 
-    for label, trajectory_result in trajectory_dict.items():
+    for idx, (label, trajectory_result) in enumerate(trajectory_dict.items()):
         sample_times = np.asarray(trajectory_result.t, dtype=float)
         plot_times, _ = _normalize_time_axis(sample_times, normalization_period)
         propagated_positions = np.asarray(trajectory_result.states[:3], dtype=float)
@@ -371,12 +499,31 @@ def plot_position_error_magnitude(
             )
 
         reference_positions = _sample_reference_positions(reference_trajectory, sample_times)
-        position_error = propagated_positions - reference_positions
+        position_error = (propagated_positions - reference_positions) * length_scale
         error_magnitude = np.linalg.norm(position_error, axis=0)
+
+        series_format = format_dicts[idx]
+        trace_defaults = {
+            key: (value.copy() if isinstance(value, dict) else value)
+            for key, value in default_format["error"].items()
+        }
+        layout_format = {
+            key: (value.copy() if isinstance(value, dict) else value)
+            for key, value in default_format["layout"].items()
+        }
+        if series_format:
+            if "error" in series_format:
+                trace_defaults.update(series_format["error"])
+            if "layout" in series_format:
+                for key, value in series_format["layout"].items():
+                    if key in layout_format and isinstance(layout_format[key], dict) and isinstance(value, dict):
+                        layout_format[key].update(value)
+                    else:
+                        layout_format[key] = value
 
         trace_format = {
             key: (value.copy() if isinstance(value, dict) else value)
-            for key, value in default_format["error"].items()
+            for key, value in trace_defaults.items()
         }
         trace_format["name"] = label
 
@@ -387,6 +534,9 @@ def plot_position_error_magnitude(
                 **trace_format,
             )
         )
+
+        if idx == 0:
+            default_format["layout"] = layout_format
 
     fig.update_layout(**default_format["layout"])
     return fig
@@ -407,8 +557,6 @@ def plot_phase_error(
     This is useful when a trajectory remains close to the reference orbit shape
     but drifts ahead of or behind the ideal orbit over time.
     """
-    xaxis_title = "Time" if normalization_period is None else "Time / Period"
-
     default_format = {
         "phase": {
             "mode": "lines",
@@ -416,8 +564,8 @@ def plot_phase_error(
         },
         "layout": {
             "title": "Phase Error Relative to Reference Trajectory",
-            "xaxis": {"title": xaxis_title},
-            "yaxis": {"title": "Phase Error"},
+            "xaxis": {"title": _normalize_time_axis(np.array([0.0, 1.0]), normalization_period)[1]},
+            "yaxis": {"title": "Phase Error [TU]"},
             "hovermode": "x unified",
         },
     }
@@ -446,14 +594,10 @@ def plot_phase_error(
             )
 
         wrapped_times = np.mod(sample_times, reference_trajectory.period)
-        nearest_phase_times = np.empty_like(sample_times)
 
-        for idx in range(sample_times.size):
-            distances = np.linalg.norm(
-                reference_positions - propagated_positions[:, idx:idx + 1],
-                axis=0,
-            )
-            nearest_phase_times[idx] = reference_times[np.argmin(distances)]
+        reference_tree = cKDTree(reference_positions.T)
+        _, nearest_indices = reference_tree.query(propagated_positions.T, workers=-1)
+        nearest_phase_times = reference_times[np.asarray(nearest_indices, dtype=int)]
 
         phase_error = (
             (nearest_phase_times - wrapped_times + 0.5 * reference_trajectory.period)
